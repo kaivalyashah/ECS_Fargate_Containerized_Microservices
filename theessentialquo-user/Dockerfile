@@ -1,6 +1,5 @@
 # Build stage
 FROM 605134445572.dkr.ecr.us-east-2.amazonaws.com/theessentialquo/maven-base-image:3.9.6-eclipse-temurin-17 AS build
- AS build
 WORKDIR /app
 COPY pom.xml .
 COPY src ./src
