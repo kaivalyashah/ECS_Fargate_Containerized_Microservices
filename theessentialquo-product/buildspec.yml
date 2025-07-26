@@ -1,0 +1,23 @@
+version: 0.2
+
+phases:
+  pre_build:
+    commands:
+      - echo Logging in to Amazon ECR...
+      - aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin 605134445572.dkr.ecr.us-east-2.amazonaws.com
+  build:
+    commands:
+      - echo Build started on `date`
+      - cd theessentialquo-product
+      - docker build -t theessentialquo-product-service .
+      - docker tag theessentialquo-product-service:latest 605134445572.dkr.ecr.us-east-2.amazonaws.com/theessentialquo/theessentialquo-product-service:latest
+  post_build:
+    commands:
+      - echo Pushing the Docker image...
+      - docker push 605134445572.dkr.ecr.us-east-2.amazonaws.com/theessentialquo/theessentialquo-product-service:latest
+      - echo Writing image definitions file...
+      - printf '[{"name":"product-service","imageUri":"%s"}]' 605134445572.dkr.ecr.us-east-2.amazonaws.com/theessentialquo/theessentialquo-product-service:latest > imagedefinitions.json
+
+artifacts:
+  files:
+    - imagedefinitions.json
