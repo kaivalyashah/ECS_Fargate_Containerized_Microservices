@@ -1,0 +1,42 @@
+pipeline {
+    agent any
+
+    environment {
+        GIT_REPO_URL = 'https://github.com/kaivalyashah/ECS_Fargate_Containerized_Microservices.git'
+    }
+
+    stages {
+        stage('Clone') {
+            steps {
+                git credentialsId: 'github-creds', url: "${env.GIT_REPO_URL}"
+            }
+        }
+        stage('Build') {
+            steps {
+		dir('theessentialquo-product'){
+                	sh 'mvn clean package'
+		}
+            }
+        }
+        stage('Test') {
+            steps {
+		dir('theessentialquo-product'){
+                	sh 'mvn test'
+		}
+            }
+        }
+        // Optional: add Docker build/push, deploy etc.
+    }
+
+    post {
+        always {
+            echo 'Pipeline finished.'
+        }
+        failure {
+            echo 'Pipeline failed!'
+        }
+        success {
+            echo 'Pipeline succeeded!'
+        }
+    }
+}
