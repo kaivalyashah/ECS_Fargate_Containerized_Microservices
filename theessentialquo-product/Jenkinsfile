@@ -1,42 +1,97 @@
 pipeline {
-    agent any
+  agent any
 
-    environment {
-        GIT_REPO_URL = 'https://github.com/kaivalyashah/ECS_Fargate_Containerized_Microservices.git'
+  environment {
+    GIT_REPO_URL = 'https://github.com/kaivalyashah/ECS_Fargate_Containerized_Microservices.git'
+    // Optional: faster Maven output
+    MAVEN_OPTS = '-Dmaven.test.failure.ignore=false'
+  }
+
+  options {
+    timestamps()
+    buildDiscarder(logRotator(numToKeepStr: '20'))
+    // Fail fast if a stage hangs
+    timeout(time: 30, unit: 'MINUTES')
+  }
+
+  triggers {
+    // Use GitHub/GitLab webhook to trigger builds on push (enable the webhook in your repo)
+    // pollSCM('H/5 * * * *') // <- optional fallback polling while you finish webhook setup
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        git credentialsId: 'github-creds', url: "${env.GIT_REPO_URL}"
+      }
     }
 
-    stages {
-        stage('Clone') {
-            steps {
-                git credentialsId: 'github-creds', url: "${env.GIT_REPO_URL}"
-            }
+    stage('Build & Test') {
+      steps {
+        dir('theessentialquo-product') {
+          // Runs unit tests and creates JaCoCo XML (ensure jacoco plugin in pom.xml)
+          sh 'mvn -B clean verify jacoco:report'
         }
-        stage('Build') {
-            steps {
-		dir('theessentialquo-product'){
-                	sh 'mvn clean package'
-		}
-            }
-        }
-        stage('Test') {
-            steps {
-		dir('theessentialquo-product'){
-                	sh 'mvn test'
-		}
-            }
-        }
-        // Optional: add Docker build/push, deploy etc.
-    }
-
-    post {
+      }
+      post {
         always {
-            echo 'Pipeline finished.'
+          // Publish unit test results
+          junit allowEmptyResults: true, testResults: 'theessentialquo-product/target/surefire-reports/*.xml'
+
+          // Optional: show coverage trend in Jenkins (needs "Coverage" plugin)
+          // If you don't have the plugin, comment the next block.
+          script {
+            try {
+              publishCoverage adapters: [jacoco('theessentialquo-product/target/site/jacoco/jacoco.xml')],
+                              sourceFileResolver: sourceFiles('STORE_LAST_BUILD')
+            } catch (ignored) {
+              echo 'Coverage plugin not installed or report missing; skipping publishCoverage.'
+            }
+          }
+
+          // Optional: archive built JAR for later stages
+          archiveArtifacts artifacts: 'theessentialquo-product/target/*.jar', fingerprint: true
         }
-        failure {
-            echo 'Pipeline failed!'
-        }
-        success {
-            echo 'Pipeline succeeded!'
-        }
+      }
     }
+
+    stage('Static Analysis (SonarQube)') {
+      steps {
+        dir('theessentialquo-product') {
+          // Inject SONAR_* env vars from Jenkins global config (Server URL + Token)
+          withSonarQubeEnv('SonarLocal') {
+            sh """
+              mvn -B sonar:sonar \
+                -Dsonar.projectKey=theessentialquo-product-key \
+                -Dsonar.projectName=theessentialquo-product \
+                -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
+            """
+          }
+        }
+      }
+    }
+
+    stage('Quality Gate') {
+      steps {
+        script {
+          // Requires SonarQube webhook to Jenkins: http://<jenkins-host>/sonarqube-webhook/
+          def qg = waitForQualityGate(timeout: '10 min')
+          echo "Quality Gate status: ${qg.status}"
+          if (qg.status != 'OK') {
+            error "Pipeline failed due to SonarQube Quality Gate: ${qg.status}"
+          }
+        }
+      }
+    }
+
+    // ---- OPTIONAL: add your container build/push/deploy AFTER the gate passes ----
+    // stage('Build & Push Docker') { steps { echo 'docker build & push to ECR here...' } }
+    // stage('Deploy to ECS')      { steps { echo 'ecs deploy/update-service here...' } }
+  }
+
+  post {
+    success { echo '✅ Pipeline succeeded.' }
+    failure { echo '❌ Pipeline failed.' }
+    always  { echo '🏁 Pipeline finished.' }
+  }
 }
