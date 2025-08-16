@@ -14,11 +14,7 @@ pipeline {
     timeout(time: 30, unit: 'MINUTES')
   }
 
-  triggers {
-    // Use GitHub/GitLab webhook to trigger builds on push (enable the webhook in your repo)
-    // pollSCM('H/5 * * * *') // <- optional fallback polling while you finish webhook setup
-  }
-
+  
   stages {
     stage('Checkout') {
       steps {
