@@ -3,18 +3,16 @@ pipeline {
 
   environment {
     GIT_REPO_URL = 'https://github.com/kaivalyashah/ECS_Fargate_Containerized_Microservices.git'
-    // Optional: faster Maven output
-    MAVEN_OPTS = '-Dmaven.test.failure.ignore=false'
+    MAVEN_OPTS   = '-Dmaven.test.failure.ignore=false'
   }
 
   options {
     timestamps()
     buildDiscarder(logRotator(numToKeepStr: '20'))
-    // Fail fast if a stage hangs
+    // Keep a sane overall cap; the test stage has its own timeout below
     timeout(time: 30, unit: 'MINUTES')
   }
 
-  
   stages {
     stage('Checkout') {
       steps {
@@ -23,29 +21,47 @@ pipeline {
     }
 
     stage('Build & Test') {
+      // Give tests more room while we enforce per-test timeouts
+      options { timeout(time: 40, unit: 'MINUTES') }
       steps {
         dir('theessentialquo-product') {
-          // Runs unit tests and creates JaCoCo XML (ensure jacoco plugin in pom.xml)
-          sh 'mvn -B clean verify jacoco:report'
+          // -Djunit.jupiter.execution.timeout.default=2m  -> any single test >2m will FAIL (no hangs)
+          // -DtrimStackTrace=false for better logs while debugging
+          // -DfailIfNoTests=false keeps the build from failing when a module has no tests
+          sh '''
+            mvn -B clean verify jacoco:report \
+              -Djunit.jupiter.execution.timeout.default=2m \
+              -DtrimStackTrace=false \
+              -DfailIfNoTests=false
+          '''
         }
       }
       post {
         always {
-          // Publish unit test results
-          junit allowEmptyResults: true, testResults: 'theessentialquo-product/target/surefire-reports/*.xml'
-
-          // Optional: show coverage trend in Jenkins (needs "Coverage" plugin)
-          // If you don't have the plugin, comment the next block.
           script {
-            try {
-              publishCoverage adapters: [jacoco('theessentialquo-product/target/site/jacoco/jacoco.xml')],
-                              sourceFileResolver: sourceFiles('STORE_LAST_BUILD')
-            } catch (ignored) {
-              echo 'Coverage plugin not installed or report missing; skipping publishCoverage.'
+            // Publish unit test results if they exist (avoids "MissingContextVariable" after node loss)
+            if (fileExists('theessentialquo-product/target/surefire-reports')) {
+              junit allowEmptyResults: true, testResults: 'theessentialquo-product/target/surefire-reports/*.xml'
+            } else {
+              echo 'No surefire-reports found; skipping JUnit publish.'
             }
           }
 
-          // Optional: archive built JAR for later stages
+          // Optional: coverage trend in Jenkins (Coverage plugin)
+          script {
+            try {
+              if (fileExists('theessentialquo-product/target/site/jacoco/jacoco.xml')) {
+                publishCoverage adapters: [jacoco('theessentialquo-product/target/site/jacoco/jacoco.xml')],
+                                sourceFileResolver: sourceFiles('STORE_LAST_BUILD')
+              } else {
+                echo 'No JaCoCo XML found; skipping coverage publish.'
+              }
+            } catch (ignored) {
+              echo 'Coverage plugin not installed or another issue; skipping publishCoverage.'
+            }
+          }
+
+          // Optional: keep the jar around
           archiveArtifacts artifacts: 'theessentialquo-product/target/*.jar', fingerprint: true
         }
       }
@@ -54,14 +70,13 @@ pipeline {
     stage('Static Analysis (SonarQube)') {
       steps {
         dir('theessentialquo-product') {
-          // Inject SONAR_* env vars from Jenkins global config (Server URL + Token)
           withSonarQubeEnv('SonarLocal') {
-            sh """
+            sh '''
               mvn -B sonar:sonar \
                 -Dsonar.projectKey=theessentialquo-product-key \
                 -Dsonar.projectName=theessentialquo-product \
                 -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
-            """
+            '''
           }
         }
       }
@@ -70,7 +85,7 @@ pipeline {
     stage('Quality Gate') {
       steps {
         script {
-          // Requires SonarQube webhook to Jenkins: http://<jenkins-host>/sonarqube-webhook/
+          // Requires SonarQube webhook to Jenkins: http://<jenkins-host>:8080/sonarqube-webhook/
           def qg = waitForQualityGate(timeout: '10 min')
           echo "Quality Gate status: ${qg.status}"
           if (qg.status != 'OK') {
@@ -80,7 +95,7 @@ pipeline {
       }
     }
 
-    // ---- OPTIONAL: add your container build/push/deploy AFTER the gate passes ----
+    // --- OPTIONAL: add container build/push/deploy AFTER the gate passes ---
     // stage('Build & Push Docker') { steps { echo 'docker build & push to ECR here...' } }
     // stage('Deploy to ECS')      { steps { echo 'ecs deploy/update-service here...' } }
   }
