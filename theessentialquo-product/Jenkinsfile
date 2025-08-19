@@ -37,34 +37,34 @@ pipeline {
         }
       }
       post {
-        always {
-          script {
-            // Publish unit test results if they exist (avoids "MissingContextVariable" after node loss)
-            if (fileExists('theessentialquo-product/target/surefire-reports')) {
-              junit allowEmptyResults: true, testResults: 'theessentialquo-product/target/surefire-reports/*.xml'
-            } else {
-              echo 'No surefire-reports found; skipping JUnit publish.'
-            }
-          }
+		always {
+			script {
+				if (fileExists('theessentialquo-product/target/surefire-reports')) {
+					junit allowEmptyResults: true, testResults: 'theessentialquo-product/target/surefire-reports/*.xml'
+				} else {
+					echo 'No surefire-reports found; skipping JUnit publish.'
+				}
+			}
 
-          // Optional: coverage trend in Jenkins (Coverage plugin)
-          script {
-            try {
-              if (fileExists('theessentialquo-product/target/site/jacoco/jacoco.xml')) {
-                publishCoverage adapters: [jacoco('theessentialquo-product/target/site/jacoco/jacoco.xml')],
-                                sourceFileResolver: sourceFiles('STORE_LAST_BUILD')
-              } else {
-                echo 'No JaCoCo XML found; skipping coverage publish.'
-              }
-            } catch (ignored) {
-              echo 'Coverage plugin not installed or another issue; skipping publishCoverage.'
-            }
-          }
+			// Coverage trend in Jenkins (requires Code Coverage API plugin)
+			script {
+				try {
+					if (fileExists('theessentialquo-product/target/site/jacoco/jacoco.xml')) {
+						publishCoverage adapters: [
+						jacocoAdapter('theessentialquo-product/target/site/jacoco/jacoco.xml')
+						],
+						sourceFileResolver: sourceFiles('STORE_LAST_BUILD')
+					} else {
+					echo 'No JaCoCo XML found; skipping coverage publish.'
+					}
+					} catch (ignored) {
+					echo 'Coverage plugin not installed or another issue; skipping publishCoverage.'
+					}
+				}
 
-          // Optional: keep the jar around
-          archiveArtifacts artifacts: 'theessentialquo-product/target/*.jar', fingerprint: true
-        }
-      }
+			archiveArtifacts artifacts: 'theessentialquo-product/target/*.jar', fingerprint: true
+		}
+		}
     }
 
     stage('Static Analysis (SonarQube)') {
