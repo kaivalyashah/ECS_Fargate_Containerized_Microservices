@@ -1,3 +1,14 @@
+environment {
+  GIT_REPO_URL   = 'https://github.com/kaivalyashah/ECS_Fargate_Containerized_Microservices.git'
+  MAVEN_OPTS     = '-Dmaven.test.failure.ignore=false'
+
+  
+  AWS_REGION     = 'us-east-2'                   // <--- change if needed
+  ECR_ACCOUNT_ID = '605134445572'                // <--- your AWS account id
+  ECR_REPO       = 'theessentialquo/theessentialquo-product-service'     // <--- your ECR repo name
+}
+
+
 pipeline {
   agent any
 
@@ -94,6 +105,59 @@ pipeline {
         }
       }
     }
+		stage('Docker Build & Tag') {
+	  steps {
+		dir('theessentialquo-product') {
+		  script {
+			// short commit SHA for tagging
+			def shortSha = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+			// read version from pom.xml (works for Maven projects)
+			def appVersion = sh(script: "mvn -q -DforceStdout -Dexpression=project.version help:evaluate", returnStdout: true).trim()
+
+			env.IMAGE_URI = "${ECR_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}"
+			env.TAG_SHA   = shortSha
+			env.TAG_VER   = appVersion
+
+			// build once, tag twice (sha and version)
+			sh """
+			  docker build -t ${ECR_REPO}:build .
+			  docker tag ${ECR_REPO}:build ${IMAGE_URI}:${TAG_SHA}
+			  docker tag ${ECR_REPO}:build ${IMAGE_URI}:${TAG_VER}
+			"""
+		  }
+		}
+	  }
+	}
+
+	stage('ECR Login & Push') {
+	  steps {
+		// ==== OPTION A: if you have the AWS Credentials plugin installed ====
+		// withAWS(credentials: 'aws-creds', region: "${env.AWS_REGION}") { ... }
+		// ==== OPTION B: works everywhere using Username/Password binding ====
+		withCredentials([usernamePassword(credentialsId: 'aws-creds',
+										  usernameVariable: 'AWS_ACCESS_KEY_ID',
+										  passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+		  sh """
+			export AWS_DEFAULT_REGION=${AWS_REGION}
+			aws ecr describe-repositories --repository-names ${ECR_REPO} >/dev/null 2>&1 || \
+			  aws ecr create-repository --repository-name ${ECR_REPO}
+
+			aws ecr get-login-password --region ${AWS_REGION} | \
+			  docker login --username AWS --password-stdin ${ECR_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+
+			docker push ${IMAGE_URI}:${TAG_SHA}
+			docker push ${IMAGE_URI}:${TAG_VER}
+		  """
+		}
+	  }
+	  post {
+		success {
+		  echo "Pushed images:"
+		  echo " - ${IMAGE_URI}:${TAG_SHA}"
+		  echo " - ${IMAGE_URI}:${TAG_VER}"
+		}
+	  }
+	}
 
     // --- OPTIONAL: add container build/push/deploy AFTER the gate passes ---
     // stage('Build & Push Docker') { steps { echo 'docker build & push to ECR here...' } }
