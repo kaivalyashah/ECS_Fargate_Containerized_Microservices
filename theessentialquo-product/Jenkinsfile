@@ -6,6 +6,7 @@ pipeline {
     MAVEN_OPTS   = '-Dmaven.test.failure.ignore=false'
 	AWS_REGION     = 'us-east-2'                   // <--- change if needed
 	ECR_ACCOUNT_ID = '605134445572'                // <--- your AWS account id
+	ECR_REGISTRY   = '605134445572.dkr.ecr.us-east-2.amazonaws.com'
 	ECR_REPO       = 'theessentialquo/theessentialquo-product-service'     // <--- your ECR repo name
   }
 
