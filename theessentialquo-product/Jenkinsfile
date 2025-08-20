@@ -154,7 +154,7 @@ pipeline {
 			  docker login --username AWS --password-stdin ${ECR_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
 
 			docker push ${IMAGE_URI}:${TAG_SHA}
-			docker push ${IMAGE_URI}:${TAG_VER}
+			
 		  """
 		}
 	  }
