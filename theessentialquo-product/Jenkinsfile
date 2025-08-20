@@ -97,7 +97,23 @@ pipeline {
         }
       }
     }
-		stage('Docker Build & Tag') {
+	
+	stage('ECR Login (for base image pull)') {
+	  steps {
+		withCredentials([usernamePassword(credentialsId: 'aws-creds',
+										  usernameVariable: 'AWS_ACCESS_KEY_ID',
+										  passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+		  sh """
+			export AWS_DEFAULT_REGION=${AWS_REGION}
+			aws ecr get-login-password --region ${AWS_REGION} | \
+			  docker login --username AWS --password-stdin ${ECR_REGISTRY}
+		  """
+		}
+	  }
+	}
+
+	
+	stage('Docker Build & Tag') {
 	  steps {
 		dir('theessentialquo-product') {
 		  script {
@@ -145,7 +161,7 @@ pipeline {
 		success {
 		  echo "Pushed images:"
 		  echo " - ${IMAGE_URI}:${TAG_SHA}"
-		  echo " - ${IMAGE_URI}:${TAG_VER}"
+		  
 		}
 	  }
 	}
