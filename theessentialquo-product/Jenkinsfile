@@ -90,7 +90,7 @@ pipeline {
       steps {
         script {
           // Requires SonarQube webhook to Jenkins: http://<jenkins-host>:8080/sonarqube-webhook/
-          def qg = waitForQualityGate(timeout: '10 min')
+          def qg = waitForQualityGate()
           echo "Quality Gate status: ${qg.status}"
           if (qg.status != 'OK') {
             error "Pipeline failed due to SonarQube Quality Gate: ${qg.status}"
