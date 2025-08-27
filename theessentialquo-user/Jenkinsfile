@@ -1,42 +1,180 @@
 pipeline {
-    agent any
+  agent any
 
-    environment {
-        GIT_REPO_URL = 'https://github.com/kaivalyashah/ECS_Fargate_Containerized_Microservices.git'
+  environment {
+    GIT_REPO_URL = 'https://github.com/kaivalyashah/ECS_Fargate_Containerized_Microservices.git'
+    MAVEN_OPTS   = '-Dmaven.test.failure.ignore=false'
+	AWS_REGION     = 'us-east-2'                   // <--- change if needed
+	ECR_ACCOUNT_ID = '605134445572'                // <--- your AWS account id
+	ECR_REGISTRY   = '605134445572.dkr.ecr.us-east-2.amazonaws.com'
+	ECR_REPO       = 'theessentialquo/theessentialquo-user-service'     // <--- your ECR repo name
+  }
+
+  options {
+    timestamps()
+    buildDiscarder(logRotator(numToKeepStr: '20'))
+    // Keep a sane overall cap; the test stage has its own timeout below
+    timeout(time: 30, unit: 'MINUTES')
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        git credentialsId: 'github-creds', url: "${env.GIT_REPO_URL}"
+      }
     }
 
-    stages {
-        stage('Clone') {
-            steps {
-                git credentialsId: 'github-creds', url: "${env.GIT_REPO_URL}"
-            }
+    stage('Build & Test') {
+      // Give tests more room while we enforce per-test timeouts
+      options { timeout(time: 40, unit: 'MINUTES') }
+      steps {
+        dir('theessentialquo-user') {
+          // -Djunit.jupiter.execution.timeout.default=2m  -> any single test >2m will FAIL (no hangs)
+          // -DtrimStackTrace=false for better logs while debugging
+          // -DfailIfNoTests=false keeps the build from failing when a module has no tests
+          sh '''
+            mvn -B clean verify jacoco:report \
+              -Djunit.jupiter.execution.timeout.default=2m \
+              -DtrimStackTrace=false \
+              -DfailIfNoTests=false
+          '''
         }
-        stage('Build') {
-            steps {
-		dir('theessentialquo-user'){
-                	sh 'mvn clean package'
+      }
+      post {
+		always {
+			script {
+				if (fileExists('theessentialquo-user/target/surefire-reports')) {
+					junit allowEmptyResults: true, testResults: 'theessentialquo-user/target/surefire-reports/*.xml'
+				} else {
+					echo 'No surefire-reports found; skipping JUnit publish.'
+				}
+			}
+
+			// Coverage trend in Jenkins (requires Code Coverage API plugin)
+			script {
+				try {
+					if (fileExists('theessentialquo-user/target/site/jacoco/jacoco.xml')) {
+						publishCoverage adapters: [
+						jacocoAdapter('theessentialquo-user/target/site/jacoco/jacoco.xml')
+						],
+						sourceFileResolver: sourceFiles('STORE_LAST_BUILD')
+					} else {
+					echo 'No JaCoCo XML found; skipping coverage publish.'
+					}
+					} catch (ignored) {
+					echo 'Coverage plugin not installed or another issue; skipping publishCoverage.'
+					}
+				}
+
+			archiveArtifacts artifacts: 'theessentialquo-user/target/*.jar', fingerprint: true
 		}
-            }
-        }
-        stage('Test') {
-            steps {
-		dir('theessentialquo-user'){
-                	sh 'mvn test'
 		}
-            }
-        }
-        // Optional: add Docker build/push, deploy etc.
     }
 
-    post {
-        always {
-            echo 'Pipeline finished.'
+    stage('Static Analysis (SonarQube)') {
+      steps {
+        dir('theessentialquo-user') {
+          withSonarQubeEnv('SonarLocal') {
+            sh '''
+              mvn -B sonar:sonar \
+                -Dsonar.projectKey=theessentialquo-user-key \
+                -Dsonar.projectName=theessentialquo-user \
+                -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
+            '''
+          }
         }
-        failure {
-            echo 'Pipeline failed!'
-        }
-        success {
-            echo 'Pipeline succeeded!'
-        }
+      }
     }
+
+    stage('Quality Gate') {
+      steps {
+        script {
+          // Requires SonarQube webhook to Jenkins: http://<jenkins-host>:8080/sonarqube-webhook/
+          def qg = waitForQualityGate(timeout: '10 min')
+          echo "Quality Gate status: ${qg.status}"
+          if (qg.status != 'OK') {
+            error "Pipeline failed due to SonarQube Quality Gate: ${qg.status}"
+          }
+        }
+      }
+    }
+	
+	stage('ECR Login (for base image pull)') {
+	  steps {
+		withCredentials([usernamePassword(credentialsId: 'aws-creds',
+										  usernameVariable: 'AWS_ACCESS_KEY_ID',
+										  passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+		  sh """
+			export AWS_DEFAULT_REGION=${AWS_REGION}
+			aws ecr get-login-password --region ${AWS_REGION} | \
+			  docker login --username AWS --password-stdin ${ECR_REGISTRY}
+		  """
+		}
+	  }
+	}
+
+	
+	stage('Docker Build & Tag') {
+	  steps {
+		dir('theessentialquo-user') {
+		  script {
+			// short commit SHA for tagging
+			def shortSha = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+			// read version from pom.xml (works for Maven projects)
+			// def appVersion = sh(script: "mvn -q -DforceStdout -Dexpression=project.version help:evaluate", returnStdout: true).trim()
+
+			env.IMAGE_URI = "${ECR_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}"
+			env.TAG_SHA   = shortSha
+			// env.TAG_VER   = appVersion
+
+			// build once, tag twice (sha and version)
+			sh """
+			  docker build -t ${ECR_REPO}:build .
+			  docker tag ${ECR_REPO}:build ${IMAGE_URI}:${TAG_SHA}
+			  """
+		  }
+		}
+	  }
+	}
+
+	stage('ECR Login & Push') {
+	  steps {
+		// ==== OPTION A: if you have the AWS Credentials plugin installed ====
+		// withAWS(credentials: 'aws-creds', region: "${env.AWS_REGION}") { ... }
+		// ==== OPTION B: works everywhere using Username/Password binding ====
+		withCredentials([usernamePassword(credentialsId: 'aws-creds',
+										  usernameVariable: 'AWS_ACCESS_KEY_ID',
+										  passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+		  sh """
+			export AWS_DEFAULT_REGION=${AWS_REGION}
+			aws ecr describe-repositories --repository-names ${ECR_REPO} >/dev/null 2>&1 || \
+			  aws ecr create-repository --repository-name ${ECR_REPO}
+
+			aws ecr get-login-password --region ${AWS_REGION} | \
+			  docker login --username AWS --password-stdin ${ECR_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+
+			docker push ${IMAGE_URI}:${TAG_SHA}
+			
+		  """
+		}
+	  }
+	  post {
+		success {
+		  echo "Pushed images:"
+		  echo " - ${IMAGE_URI}:${TAG_SHA}"
+		  
+		}
+	  }
+	}
+
+    // --- OPTIONAL: add container build/push/deploy AFTER the gate passes ---
+    // stage('Build & Push Docker') { steps { echo 'docker build & push to ECR here...' } }
+    // stage('Deploy to ECS')      { steps { echo 'ecs deploy/update-service here...' } }
+  }
+
+  post {
+    success { echo '✅ Pipeline succeeded.' }
+    failure { echo '❌ Pipeline failed.' }
+    always  { echo '🏁 Pipeline finished.' }
+  }
 }
